@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
+import ReactMarkdown from "react-markdown";
 
 interface Message {
   role: "user" | "bot";
@@ -8,6 +9,13 @@ interface Message {
 }
 
 const LS_KEY = "rag-chat-history";
+const THEME_KEY = "rag-chat-theme";
+const SUGGESTIONS = [
+  "Jaka jest historia Polski?",
+  "Kto był pierwszym królem Polski?",
+  "Opowiedz o rozbiorach Polski.",
+  "Jak Polska odzyskała niepodległość?",
+];
 
 const AVATAR_USER = (
   <span style={{
@@ -42,21 +50,38 @@ const AVATAR_BOT = (
   }}>🤖</span>
 );
 
+const THEMES = [
+  { name: "Jasny", key: "light" },
+  { name: "Ciemny", key: "dark" },
+  { name: "Kolorowy", key: "color" },
+];
+
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [file, setFile] = useState<File | null>(null);
+  const [fileName, setFileName] = useState<string>("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [theme, setTheme] = useState<string>("auto");
   const [isDark, setIsDark] = useState(false);
 
-  // Tryb ciemny na podstawie prefers-color-scheme
+  // Tryb ciemny/kolorowy/manualny
   useEffect(() => {
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    setIsDark(mq.matches);
-    const handler = (e: MediaQueryListEvent) => setIsDark(e.matches);
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
+    const saved = localStorage.getItem(THEME_KEY);
+    if (saved && saved !== "auto") setTheme(saved);
+    else setTheme("auto");
   }, []);
+  useEffect(() => {
+    if (theme === "auto") {
+      const mq = window.matchMedia("(prefers-color-scheme: dark)");
+      setIsDark(mq.matches);
+      const handler = (e: MediaQueryListEvent) => setIsDark(e.matches);
+      mq.addEventListener("change", handler);
+      return () => mq.removeEventListener("change", handler);
+    } else if (theme === "dark") setIsDark(true);
+    else setIsDark(false);
+  }, [theme]);
 
   // Wczytaj historię z localStorage
   useEffect(() => {
@@ -70,16 +95,35 @@ export default function Home() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Zapisuj motyw
+  useEffect(() => {
+    localStorage.setItem(THEME_KEY, theme);
+  }, [theme]);
+
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim()) return;
-    setMessages((msgs) => [...msgs, { role: "user", text: input }]);
+    if (!input.trim() && !file) return;
+    let fileContent = "";
+    if (file) {
+      if (file.type === "application/pdf") {
+        // PDF: tylko nazwa, bo nie parsujemy PDF po stronie frontu (można dodać pdfjs w przyszłości)
+        fileContent = `\n[Załączono plik PDF: ${file.name}]`;
+      } else {
+        fileContent = await file.text();
+      }
+    }
+    setMessages((msgs) => [...msgs, { role: "user", text: input + (fileContent ? `\n${fileContent}` : "") }]);
     setLoading(true);
     try {
+      const body: any = { query: input };
+      if (file && file.type !== "application/pdf") {
+        body.fileContent = fileContent;
+        body.fileName = file.name;
+      }
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: input }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       setMessages((msgs) => [
@@ -94,6 +138,8 @@ export default function Home() {
     } finally {
       setLoading(false);
       setInput("");
+      setFile(null);
+      setFileName("");
     }
   };
 
@@ -112,11 +158,11 @@ export default function Home() {
   };
 
   // Kolory zależne od trybu
-  const bg = isDark ? "#181c20" : "#f7f8fa";
+  const bg = theme === "color" ? "linear-gradient(135deg,#e3f0ff 0%,#f7e8ff 100%)" : isDark ? "#181c20" : "#f7f8fa";
   const card = isDark ? "#23272e" : "#fff";
   const border = isDark ? "#333" : "#e0e0e0";
-  const userBubble = isDark ? "#4285f4" : "#4285f4";
-  const botBubble = isDark ? "#23272e" : "#f1f3f4";
+  const userBubble = theme === "color" ? "linear-gradient(135deg,#4285f4,#34a853)" : "#4285f4";
+  const botBubble = theme === "color" ? "linear-gradient(135deg,#fff,#4285f4 80%)" : isDark ? "#23272e" : "#f1f3f4";
   const botText = isDark ? "#fff" : "#222";
   const userText = "#fff";
   const contextBg = isDark ? "#222b" : "#e8f0fe";
@@ -127,6 +173,24 @@ export default function Home() {
       <h1 style={{ textAlign: "center", fontWeight: 700, fontSize: 28, marginBottom: 16, color: isDark ? "#fff" : undefined }}>
         RAG Chatbot <span style={{ color: "#4285f4" }}>(Gemini Flash)</span>
       </h1>
+      <div style={{ display: "flex", justifyContent: "center", gap: 8, marginBottom: 12 }}>
+        {THEMES.map(t => (
+          <button key={t.key} onClick={() => setTheme(t.key)} style={{
+            padding: "6px 16px", borderRadius: 8, border: 0, fontWeight: 500, fontSize: 14,
+            background: theme === t.key ? "#4285f4" : isDark ? "#23272e" : "#e0e0e0",
+            color: theme === t.key ? "#fff" : isDark ? "#fff" : "#333",
+            cursor: "pointer"
+          }}>{t.name}</button>
+        ))}
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+        {SUGGESTIONS.map(s => (
+          <button key={s} onClick={() => setInput(s)} style={{
+            padding: "6px 12px", borderRadius: 8, border: 0, fontWeight: 400, fontSize: 14,
+            background: isDark ? "#23272e" : "#e0e0e0", color: isDark ? "#fff" : "#333", cursor: "pointer"
+          }}>{s}</button>
+        ))}
+      </div>
       <div style={{ minHeight: 320, background: card, border: `1px solid ${border}`, borderRadius: 12, padding: 16, marginBottom: 16, overflowY: "auto", maxHeight: 400 }}>
         {messages.length === 0 && <div style={{ color: isDark ? "#888" : "#888", textAlign: "center" }}>Zadaj pytanie…</div>}
         {messages.map((msg, i) => (
@@ -143,7 +207,8 @@ export default function Home() {
               position: "relative",
               transition: "background 0.3s, color 0.3s"
             }}>
-              <b style={{ fontWeight: 600 }}>{msg.role === "user" ? "Ty" : "Bot"}:</b> {msg.text}
+              <b style={{ fontWeight: 600 }}>{msg.role === "user" ? "Ty" : "Bot"}:</b>{" "}
+              <ReactMarkdown>{msg.text}</ReactMarkdown>
               {msg.role === "bot" && msg.context && (
                 <details style={{ marginTop: 8, fontSize: 13, background: contextBg, borderRadius: 8, padding: 8, color: contextText }}>
                   <summary style={{ cursor: "pointer", fontWeight: 500, color: "#4285f4" }}>Pokaż kontekst</summary>
@@ -156,7 +221,7 @@ export default function Home() {
         {loading && <div style={{ color: isDark ? "#888" : "#888", textAlign: "center" }}>Generowanie odpowiedzi…</div>}
         <div ref={messagesEndRef} />
       </div>
-      <form onSubmit={sendMessage} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+      <form onSubmit={sendMessage} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}>
         <input
           value={input}
           onChange={e => setInput(e.target.value)}
@@ -164,7 +229,33 @@ export default function Home() {
           style={{ flex: 1, padding: 12, borderRadius: 8, border: `1px solid ${border}`, fontSize: 16, background: isDark ? "#23272e" : "#f9f9fb", color: isDark ? "#fff" : undefined }}
           disabled={loading}
         />
-        <button type="submit" disabled={loading || !input.trim()} style={{ padding: "12px 24px", borderRadius: 8, background: "#4285f4", color: "#fff", border: 0, fontWeight: 600, fontSize: 16, cursor: loading ? "not-allowed" : "pointer" }}>
+        <input
+          type="file"
+          accept=".txt,application/pdf"
+          style={{ display: "none" }}
+          id="file-upload"
+          onChange={e => {
+            if (e.target.files && e.target.files[0]) {
+              setFile(e.target.files[0]);
+              setFileName(e.target.files[0].name);
+            }
+          }}
+        />
+        <label htmlFor="file-upload" style={{
+          background: isDark ? "#23272e" : "#e0e0e0",
+          color: isDark ? "#fff" : "#333",
+          borderRadius: 8,
+          padding: "10px 14px",
+          fontWeight: 500,
+          fontSize: 14,
+          cursor: "pointer",
+          border: 0,
+          marginRight: 4
+        }}>
+          📎
+        </label>
+        {fileName && <span style={{ fontSize: 13, color: isDark ? "#fff" : "#333", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis" }}>{fileName}</span>}
+        <button type="submit" disabled={loading || (!input.trim() && !file)} style={{ padding: "12px 24px", borderRadius: 8, background: "#4285f4", color: "#fff", border: 0, fontWeight: 600, fontSize: 16, cursor: loading ? "not-allowed" : "pointer" }}>
           Wyślij
         </button>
       </form>

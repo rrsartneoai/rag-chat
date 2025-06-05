@@ -5,43 +5,62 @@ import { chunkText } from '@/lib/chunkText';
 import { sampleText } from '@/lib/sampleData';
 import { embedText } from '@/lib/embedText';
 import { VectorStore } from '@/lib/vectorStore';
+import pdfParse from 'pdf-parse';
 
-// Inicjalizacja magazynu embeddingów (na start: in-memory, na zimno)
-const chunks = chunkText(sampleText, 200);
-let store: VectorStore | null = null;
+// Domyślny magazyn embeddingów (sampleText)
+const defaultChunks = chunkText(sampleText, 200);
+let defaultStore: VectorStore | null = null;
 
-async function getStore() {
-  if (!store) {
-    store = new VectorStore();
-    // Precompute embeddingi dla wszystkich chunków
-    const entries = await Promise.all(
-      chunks.map(async chunk => ({
-        chunk,
-        embedding: await embedText(chunk),
-      }))
-    );
-    store.addMany(entries);
-  }
+async function getStore(chunks: string[]) {
+  const store = new VectorStore();
+  const entries = await Promise.all(
+    chunks.map(async chunk => ({
+      chunk,
+      embedding: await embedText(chunk),
+    }))
+  );
+  store.addMany(entries);
   return store;
 }
 
 export async function POST(req: NextRequest) {
-  const { query } = await req.json();
-  if (!query || typeof query !== 'string') {
-    return new Response(JSON.stringify({ error: 'Brak zapytania' }), { status: 400 });
+  const body = await req.json();
+  const query = body.query as string;
+  const fileContent = body.fileContent as string | undefined;
+  const filePdfBase64 = body.filePdfBase64 as string | undefined;
+
+  // Jeśli jest plik, użyj go jako źródła wiedzy
+  let store: VectorStore;
+  let contextChunks: string[];
+  if (filePdfBase64 && filePdfBase64.length > 0) {
+    // Parsowanie PDF
+    const pdfBuffer = Buffer.from(filePdfBase64, 'base64');
+    const pdfData = await pdfParse(pdfBuffer);
+    const pdfText = pdfData.text;
+    contextChunks = chunkText(pdfText, 200);
+    store = await getStore(contextChunks);
+  } else if (fileContent && fileContent.trim().length > 0) {
+    contextChunks = chunkText(fileContent, 200);
+    store = await getStore(contextChunks);
+  } else {
+    if (!defaultStore) defaultStore = await getStore(defaultChunks);
+    store = defaultStore;
+    contextChunks = defaultChunks;
   }
 
   // Embedding zapytania
   const queryEmbedding = await embedText(query);
-  const store = await getStore();
+  // Retrieval: najbliższe fragmenty
   const nearest = store.findNearest(queryEmbedding, 3);
-  const context = nearest.map(e => e.chunk).join('\n');
+  const context = nearest.map(e => e.chunk).join('\n---\n');
 
-  // Generowanie odpowiedzi przez Gemini Flash
+  // Prompt do LLM
+  const prompt = `Odpowiedz na pytanie na podstawie poniższych fragmentów tekstu. Jeśli nie ma odpowiedzi w kontekście, napisz "Nie wiem".\n\nKontekst:\n${context}\n\nPytanie: ${query}\nOdpowiedź:`;
+
   const { text: answer } = await generateText({
     model: google('gemini-1.5-flash-latest'),
-    system: 'Jesteś pomocnym asystentem. Odpowiadaj na podstawie kontekstu.',
-    prompt: `Kontekst:\n${context}\n\nPytanie:\n${query}\n\nOdpowiedź:`,
+    prompt,
+    maxTokens: 256,
   });
 
   return Response.json({ answer, context });
